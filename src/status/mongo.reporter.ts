@@ -20,11 +20,21 @@ export async function connectMongo(): Promise<boolean> {
     return false;
   }
 
-  client = new MongoClient(config.mongoUri);
-  await client.connect();
-  db = client.db();
-  console.log('[mongo] connected');
-  return true;
+  try {
+    client = new MongoClient(config.mongoUri);
+    await client.connect();
+    db = client.db();
+    console.log('[mongo] connected');
+    return true;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(
+      `[mongo] connection failed — continuing without status updates: ${message}`,
+    );
+    client = null;
+    db = null;
+    return false;
+  }
 }
 
 export async function disconnectMongo(): Promise<void> {

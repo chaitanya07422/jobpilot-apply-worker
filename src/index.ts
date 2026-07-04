@@ -8,6 +8,7 @@ async function main(): Promise<void> {
     `[boot] redis=${config.redis.host}:${config.redis.port} queue=${config.queueName} mode=${config.applyMode}`,
   );
 
+  // Mongo is optional in Phase 1; TLS/Atlas issues must not crash the worker.
   await connectMongo();
 
   const worker = startApplyWorker();

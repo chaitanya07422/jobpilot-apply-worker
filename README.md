@@ -11,9 +11,19 @@ Runs on a **home Dell Linux (x86_64)** PC — not on the API host.
 | Phase 3 — Playwright open URL | Ready (`APPLY_MODE=open`) |
 | Phase 4 — Greenhouse form fill | Later |
 
+**Repo:** https://github.com/chaitanya07422/jobpilot-apply-worker
+
 ---
 
-## One-time setup on the Dell
+## One-time setup on the Dell (`chaitu@192.168.1.15`)
+
+From your Mac (same Wi‑Fi):
+
+```bash
+ssh chaitu@192.168.1.15
+```
+
+On the Dell:
 
 ```bash
 # Node 20+
@@ -21,13 +31,13 @@ curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt-get install -y nodejs git
 sudo npm i -g pm2
 
-# Clone (use your GitHub remote)
+# Clone
 mkdir -p ~/apps && cd ~/apps
-git clone git@github.com:<you>/jobpilot-apply-worker.git
+git clone https://github.com/chaitanya07422/jobpilot-apply-worker.git
 cd jobpilot-apply-worker
 
 cp .env.example .env
-# Edit .env — at minimum REDIS_HOST / REDIS_PORT for the API Redis
+nano .env   # set REDIS_* (and MONGODB_URI when API is ready)
 
 npm ci
 npx playwright install --with-deps chromium
@@ -38,46 +48,82 @@ pm2 save
 pm2 startup   # follow the printed command
 ```
 
-Disable sleep/suspend on the Dell so the worker stays online.
+Disable sleep/suspend on the Dell.
 
-### `.env` (stays on the Dell only)
+### `.env` on Dell only (never commit)
 
 ```bash
-REDIS_HOST=...              # Tailscale IP, SSH tunnel 127.0.0.1, or cloud Redis
+REDIS_HOST=...
 REDIS_PORT=6379
 REDIS_PASSWORD=
-MONGODB_URI=                # optional until API writes apply_jobs
+MONGODB_URI=
 APPLY_QUEUE_NAME=apply
-APPLY_MODE=noop             # use "open" to enable Playwright navigation
+APPLY_MODE=noop
 PLAYWRIGHT_HEADLESS=true
 CONCURRENCY=1
 ```
 
 ---
 
-## CI/CD (auto-deploy on push to `main`)
+## CI/CD (same as Oracle backend)
 
-Same pattern as `jobpilot-backend`: lint/build on GitHub, deploy on the Dell.
+Push to `main` → GitHub Actions lint/build → **SSH into Dell** → `git pull` + `npm ci` + build + `pm2 reload`.
 
-### Recommended: self-hosted runner (no public SSH)
+### Important: GitHub cannot reach `192.168.1.15`
 
-1. Push this repo to GitHub.
-2. On the Dell, install a [self-hosted runner](https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners/adding-self-hosted-runners) (Linux x64).
-3. Run it as a service so it survives reboot.
-4. In the GitHub repo: **Settings → Secrets and variables → Actions → Variables**
-   - Name: `APP_DIR`
-   - Value: absolute path to the clone, e.g. `/home/chaitu/apps/jobpilot-apply-worker`
+`192.168.1.15` is a **private LAN** address. GitHub’s runners are on the public internet, so `DELL_HOST` must be something they can reach:
 
-Every push to `main`:
+1. **Router port-forward** TCP `22` (or another port) → `192.168.1.15:22`
+2. **DuckDNS / dynamic DNS** hostname pointing at your home public IP
+3. Set secret `DELL_HOST` to that hostname (e.g. `chaitu-dell.duckdns.org`), **not** `192.168.1.15`
 
-1. `lint-build` on `ubuntu-latest`
-2. `deploy` on `self-hosted` → `git pull` → `npm ci` → build → `pm2 reload`
+Use key-only SSH (disable password login if you expose port 22).
 
-Secrets (Redis/Mongo) are **never** in GitHub — only in Dell `.env`.
+### Dell identity (your machine)
 
-### Optional: SSH deploy
+| | LAN (Mac → Dell) | GitHub Actions → Dell |
+|--|------------------|------------------------|
+| User | `chaitu` | secret `DELL_USER` = `chaitu` |
+| Host | `192.168.1.15` | secret `DELL_HOST` = **public** hostname (DuckDNS), **not** `192.168.1.15` |
+| App dir | `/home/chaitu/apps/jobpilot-apply-worker` | secret `DELL_APP_DIR` = same path |
 
-See [`.github/workflows/deploy-ssh.yml`](.github/workflows/deploy-ssh.yml) (disabled by default). Prefer the self-hosted runner for a home PC.
+From Mac (same Wi‑Fi):
+
+```bash
+ssh chaitu@192.168.1.15
+```
+
+### GitHub secrets
+
+Repo → **Settings → Secrets and variables → Actions → Secrets**:
+
+| Secret | Value |
+|--------|--------|
+| `DELL_HOST` | DuckDNS / public IP (GitHub **cannot** use `192.168.1.15`) |
+| `DELL_USER` | `chaitu` |
+| `DELL_SSH_KEY` | Private key (full PEM). Public key in Dell `~/.ssh/authorized_keys` |
+| `DELL_APP_DIR` | `/home/chaitu/apps/jobpilot-apply-worker` |
+| `DELL_SSH_PORT` | Optional, default `22` (use forwarded port if different) |
+
+Also create environment **`production`** (Settings → Environments) if the workflow requires it (same as backend).
+
+### Create SSH key on Mac (for Actions)
+
+```bash
+ssh-keygen -t ed25519 -C "github-actions-dell" -f ~/.ssh/jobpilot_dell_deploy -N ""
+ssh-copy-id -i ~/.ssh/jobpilot_dell_deploy.pub chaitu@192.168.1.15
+
+# Paste PRIVATE key into GitHub secret DELL_SSH_KEY:
+cat ~/.ssh/jobpilot_dell_deploy
+```
+
+Test from Mac:
+
+```bash
+ssh -i ~/.ssh/jobpilot_dell_deploy chaitu@192.168.1.15
+```
+
+After port-forward + DuckDNS, test from outside (or rely on Actions).
 
 ---
 
@@ -85,22 +131,17 @@ See [`.github/workflows/deploy-ssh.yml`](.github/workflows/deploy-ssh.yml) (disa
 
 ```bash
 cp .env.example .env
-# point REDIS_HOST at a local Redis if you have one
 npm ci
 npm run build
 npm start
 ```
 
-With `APPLY_MODE=noop`, the worker only logs and acknowledges queue jobs (safe until the API enqueues real work).
-
-With `APPLY_MODE=open`, it launches Chromium and navigates to `applyUrl` (requires Playwright browsers installed).
+`APPLY_MODE=noop` — ack jobs only (Phase 1 default).  
+`APPLY_MODE=open` — Playwright navigates to `applyUrl`.
 
 ---
 
-## Queue payload (for Phase 2 API)
-
-BullMQ job name: any (worker handles all jobs on the queue).  
-Queue name: `apply` (or `APPLY_QUEUE_NAME`).
+## Queue payload (Phase 2 API)
 
 ```json
 {
