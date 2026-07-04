@@ -1,0 +1,41 @@
+# Optional: deploy via SSH from GitHub-hosted runners (exposes Dell SSH).
+# Prefer ci.yml self-hosted runner. Enable by setting secrets and
+# renaming/using this workflow only if you accept opening SSH.
+#
+# Required secrets: DELL_HOST, DELL_USER, DELL_SSH_KEY, DELL_APP_DIR
+# Optional: DELL_SSH_PORT (default 22)
+#
+# Disabled by default — remove the `if: false` line to enable.
+
+name: Deploy via SSH
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    name: Deploy worker to Dell over SSH
+    if: false
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DELL_HOST }}
+          username: ${{ secrets.DELL_USER }}
+          key: ${{ secrets.DELL_SSH_KEY }}
+          port: ${{ secrets.DELL_SSH_PORT || 22 }}
+          script: |
+            set -euo pipefail
+            cd ${{ secrets.DELL_APP_DIR }}
+            git fetch origin main
+            git checkout main
+            git pull origin main
+            npm ci
+            npx playwright install chromium
+            npm run build
+            pm2 reload ecosystem.config.cjs --update-env \
+              || pm2 start ecosystem.config.cjs
+            pm2 save
