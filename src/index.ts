@@ -1,4 +1,5 @@
 import { config } from './config';
+import { startHealthServer, type HealthState } from './health/server';
 import { startApplyWorker } from './queue/apply.worker';
 import { connectMongo, disconnectMongo } from './status/mongo.reporter';
 
@@ -11,10 +12,16 @@ async function main(): Promise<void> {
   // Mongo is optional in Phase 1; TLS/Atlas issues must not crash the worker.
   await connectMongo();
 
-  const worker = startApplyWorker();
+  const healthState: HealthState = { workerReady: false };
+  const healthServer = startHealthServer(healthState);
+  const worker = startApplyWorker(() => {
+    healthState.workerReady = true;
+  });
 
   const shutdown = async (signal: string) => {
     console.log(`[boot] ${signal} received, shutting down`);
+    healthState.workerReady = false;
+    await new Promise<void>((resolve) => healthServer.close(() => resolve()));
     await worker.close();
     await disconnectMongo();
     process.exit(0);

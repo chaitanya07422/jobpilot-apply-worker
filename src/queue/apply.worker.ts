@@ -60,7 +60,7 @@ async function processApplyJob(job: Job): Promise<void> {
   throw new Error(result.error);
 }
 
-export function startApplyWorker(): Worker {
+export function startApplyWorker(onReady?: () => void): Worker {
   const worker = new Worker(config.queueName, processApplyJob, {
     connection: {
       host: config.redis.host,
@@ -75,6 +75,7 @@ export function startApplyWorker(): Worker {
     console.log(
       `[worker] listening on queue "${config.queueName}" (concurrency=${config.concurrency})`,
     );
+    onReady?.();
   });
 
   worker.on('failed', (job, error) => {

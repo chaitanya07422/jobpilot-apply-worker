@@ -61,6 +61,15 @@ APPLY_QUEUE_NAME=apply
 APPLY_MODE=noop
 PLAYWRIGHT_HEADLESS=true
 CONCURRENCY=1
+HEALTH_HOST=0.0.0.0
+HEALTH_PORT=3100
+```
+
+Health check (after deploy):
+
+```bash
+curl -s http://192.168.1.15:3100/health
+# {"ok":true,"service":"jobpilot-apply-worker","queue":"apply","mode":"noop","worker":"ready","redis":"up"}
 ```
 
 ---

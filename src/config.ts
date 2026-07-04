@@ -31,6 +31,8 @@ export const config = {
   headless: bool('PLAYWRIGHT_HEADLESS', true),
   concurrency: Math.max(1, Number(process.env.CONCURRENCY ?? 1)),
   navigationTimeoutMs: Number(process.env.NAVIGATION_TIMEOUT_MS ?? 60_000),
+  healthHost: process.env.HEALTH_HOST?.trim() || '0.0.0.0',
+  healthPort: Number(process.env.HEALTH_PORT ?? 3100),
 };
 
 export type ApplyJobPayload = {

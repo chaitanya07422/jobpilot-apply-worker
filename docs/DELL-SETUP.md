@@ -17,6 +17,15 @@ pm2 logs jobpilot-apply-worker --lines 10
 
 You want: `[worker] listening on queue "apply"` (or at least no crash loop).
 
+Health check (from Mac on same Wi‑Fi, or on the Dell):
+
+```bash
+curl -s http://192.168.1.15:3100/health
+# {"ok":true,"service":"jobpilot-apply-worker","queue":"apply","mode":"noop","worker":"ready","redis":"up"}
+```
+
+`ok: true` and HTTP 200 = healthy. `503` means worker still starting or Redis is down.
+
 ```bash
 pm2 save
 pm2 startup
