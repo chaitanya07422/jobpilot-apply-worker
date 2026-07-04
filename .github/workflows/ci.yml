@@ -27,8 +27,8 @@ jobs:
       - name: Build
         run: npm run build
 
-  # Runs ON the Dell (self-hosted runner). No public SSH / DuckDNS needed.
-  # One-time: install runner on Dell, set repo variable APP_DIR.
+  # Runs ON the Dell (self-hosted runner).
+  # Uses public HTTPS remote so git pull needs no GitHub login.
   deploy:
     name: Deploy worker on Dell
     needs: lint-build
@@ -45,9 +45,13 @@ jobs:
             exit 1
           fi
           cd "$APP_DIR"
+
+          # Public HTTPS — no username/password prompt in CI
+          git remote set-url origin https://github.com/chaitanya07422/jobpilot-apply-worker.git
           git fetch origin main
           git checkout main
-          git pull origin main
+          git reset --hard origin/main
+
           npm ci
           npx playwright install chromium
           npm run build
