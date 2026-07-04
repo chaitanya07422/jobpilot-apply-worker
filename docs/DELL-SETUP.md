@@ -10,12 +10,29 @@ App: `/home/chaitu/apps/jobpilot-apply-worker`
 ssh chaitu@192.168.1.15
 cd ~/apps/jobpilot-apply-worker
 
-# .env: REDIS_HOST=127.0.0.1, REDIS_PASSWORD=, MONGODB_URI= empty
+# .env must include:
+#   REDIS_HOST=127.0.0.1
+#   MONGODB_URI=<same Atlas URI as jobpilot-backend>
+#   APPLY_MODE=noop
 pm2 status
 pm2 logs jobpilot-apply-worker --lines 10
 ```
 
 You want: `[worker] listening on queue "apply"` (or at least no crash loop).
+
+## Phase 2 — shared Redis via Tailscale
+
+Accept enqueues BullMQ jobs on queue `apply`. Oracle and Dell must share **one Redis** (on the Dell), reached over **Tailscale**.
+
+**Full checklist:** [TAILSCALE-REDIS.md](./TAILSCALE-REDIS.md)
+
+Short version:
+
+1. Install Tailscale on **Dell** and **Oracle**; note Dell’s `tailscale ip -4` (e.g. `100.x.x.x`).
+2. On Dell Redis: `bind 127.0.0.1 100.x.x.x` + `requirepass …`, restart Redis.
+3. Dell worker `.env`: `REDIS_HOST=127.0.0.1`, same password, `MONGODB_URI` = Atlas.
+4. Oracle API `.env`: `REDIS_HOST=100.x.x.x`, same password, `APPLY_ENQUEUE_ENABLED=true`.
+5. `pm2 reload` both; Accept a job → Dell worker logs + `apply_jobs.status=opened`.
 
 Health check (from Mac on same Wi‑Fi, or on the Dell):
 

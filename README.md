@@ -6,8 +6,8 @@ Runs on a **home Dell Linux (x86_64)** PC — not on the API host.
 
 | Phase | Status |
 |-------|--------|
-| Phase 1 — scaffold + CI/CD | **This repo** |
-| Phase 2 — API enqueue on Accept | `jobpilot-backend` (not yet) |
+| Phase 1 — scaffold + CI/CD | Done |
+| Phase 2 — API enqueue on Accept | Done (shared Redis + `apply_jobs`) |
 | Phase 3 — Playwright open URL | Ready (`APPLY_MODE=open`) |
 | Phase 4 — Greenhouse form fill | Later |
 

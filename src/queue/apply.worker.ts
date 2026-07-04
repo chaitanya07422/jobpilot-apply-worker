@@ -30,8 +30,13 @@ async function processApplyJob(job: Job): Promise<void> {
 
   if (config.applyMode === 'noop') {
     console.log(
-      '[worker] APPLY_MODE=noop — acknowledging without browser (Phase 1)',
+      '[worker] APPLY_MODE=noop — acknowledging without browser',
     );
+    await updateApplyJobStatus({
+      applyJobId: payload.applyJobId,
+      status: 'opened',
+      lastError: '',
+    });
     return;
   }
 
