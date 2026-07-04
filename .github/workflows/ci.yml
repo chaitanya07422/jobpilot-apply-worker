@@ -28,14 +28,18 @@ jobs:
         run: npm run build
 
   # Runs ON the Dell (self-hosted runner).
-  # Uses public HTTPS remote so git pull needs no GitHub login.
+  # Private repo: checkout uses GITHUB_TOKEN (no Dell git credentials).
+  # Code is synced into APP_DIR; .env and actions-runner are preserved.
   deploy:
     name: Deploy worker on Dell
     needs: lint-build
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: self-hosted
     steps:
-      - name: Pull, build, reload PM2
+      - name: Checkout (authenticated for private repo)
+        uses: actions/checkout@v4
+
+      - name: Install, build, reload PM2
         env:
           APP_DIR: ${{ vars.APP_DIR }}
         run: |
@@ -44,14 +48,17 @@ jobs:
             echo "Set repository variable APP_DIR (e.g. /home/chaitu/apps/jobpilot-apply-worker)"
             exit 1
           fi
+
+          # Sync new code into the permanent app dir without wiping secrets/runner
+          rsync -a \
+            --exclude '.env' \
+            --exclude 'node_modules' \
+            --exclude 'actions-runner' \
+            --exclude '.git' \
+            --exclude 'dist' \
+            ./ "$APP_DIR/"
+
           cd "$APP_DIR"
-
-          # Public HTTPS — no username/password prompt in CI
-          git remote set-url origin https://github.com/chaitanya07422/jobpilot-apply-worker.git
-          git fetch origin main
-          git checkout main
-          git reset --hard origin/main
-
           npm ci
           npx playwright install chromium
           npm run build
