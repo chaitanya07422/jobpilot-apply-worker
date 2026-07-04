@@ -27,37 +27,30 @@ jobs:
       - name: Build
         run: npm run build
 
-  # Same pattern as jobpilot-backend → Oracle VM (SSH deploy).
-  # GitHub secrets (repo Settings → Secrets and variables → Actions):
-  #   DELL_HOST      — public IP or DuckDNS (NOT 192.168.x.x from GitHub cloud)
-  #   DELL_USER      — chaitu
-  #   DELL_SSH_KEY   — private key whose public key is in Dell ~/.ssh/authorized_keys
-  #   DELL_APP_DIR   — e.g. /home/chaitu/apps/jobpilot-apply-worker
-  # Optional:
-  #   DELL_SSH_PORT  — default 22
+  # Runs ON the Dell (self-hosted runner). No public SSH / DuckDNS needed.
+  # One-time: install runner on Dell, set repo variable APP_DIR.
   deploy:
-    name: Deploy worker to Dell
+    name: Deploy worker on Dell
     needs: lint-build
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    environment: production
+    runs-on: self-hosted
     steps:
-      - name: Deploy over SSH
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host: ${{ secrets.DELL_HOST }}
-          username: ${{ secrets.DELL_USER }}
-          key: ${{ secrets.DELL_SSH_KEY }}
-          port: ${{ secrets.DELL_SSH_PORT || 22 }}
-          script: |
-            set -euo pipefail
-            cd ${{ secrets.DELL_APP_DIR }}
-            git fetch origin main
-            git checkout main
-            git pull origin main
-            npm ci
-            npx playwright install chromium
-            npm run build
-            pm2 reload ecosystem.config.cjs --update-env \
-              || pm2 start ecosystem.config.cjs
-            pm2 save
+      - name: Pull, build, reload PM2
+        env:
+          APP_DIR: ${{ vars.APP_DIR }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APP_DIR:-}" ]; then
+            echo "Set repository variable APP_DIR (e.g. /home/chaitu/apps/jobpilot-apply-worker)"
+            exit 1
+          fi
+          cd "$APP_DIR"
+          git fetch origin main
+          git checkout main
+          git pull origin main
+          npm ci
+          npx playwright install chromium
+          npm run build
+          pm2 reload ecosystem.config.cjs --update-env \
+            || pm2 start ecosystem.config.cjs
+          pm2 save
