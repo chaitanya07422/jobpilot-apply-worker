@@ -18,6 +18,8 @@ function bool(name: string, fallback: boolean): boolean {
   return raw === 'true' || raw === '1' || raw === 'yes';
 }
 
+export type ApplyMode = 'noop' | 'open' | 'greenhouse';
+
 export const config = {
   redis: {
     host: required('REDIS_HOST', '127.0.0.1'),
@@ -26,13 +28,20 @@ export const config = {
   },
   mongoUri: process.env.MONGODB_URI?.trim() || '',
   queueName: required('APPLY_QUEUE_NAME', 'apply'),
-  /** noop = acknowledge jobs only; open = Playwright navigate (Phase A) */
-  applyMode: (process.env.APPLY_MODE?.trim() || 'noop') as 'noop' | 'open',
+  /** noop | open (navigate only) | greenhouse (fill + optional submit) */
+  applyMode: (process.env.APPLY_MODE?.trim() || 'noop') as ApplyMode,
+  /** When true with greenhouse mode, clicks Submit (default false = fill only) */
+  applySubmit: bool('APPLY_SUBMIT', false),
   headless: bool('PLAYWRIGHT_HEADLESS', true),
   concurrency: Math.max(1, Number(process.env.CONCURRENCY ?? 1)),
   navigationTimeoutMs: Number(process.env.NAVIGATION_TIMEOUT_MS ?? 60_000),
   healthHost: process.env.HEALTH_HOST?.trim() || '0.0.0.0',
   healthPort: Number(process.env.HEALTH_PORT ?? 3100),
+  apiPublicUrl: (
+    process.env.API_PUBLIC_URL?.trim() || 'https://jobpilot-api.duckdns.org'
+  ).replace(/\/$/, ''),
+  applyWorkerSecret: process.env.APPLY_WORKER_SECRET?.trim() || '',
+  defaultPhone: process.env.APPLY_DEFAULT_PHONE?.trim() || '',
 };
 
 export type ApplyJobPayload = {

@@ -43,6 +43,28 @@ curl -s http://192.168.1.15:3100/health
 
 `ok: true` and HTTP 200 = healthy. `503` means worker still starting or Redis is down.
 
+## Phase 4 — Greenhouse auto-apply
+
+**Oracle `.env`:**
+```bash
+APPLY_WORKER_SECRET=<long random string>
+```
+
+**Dell worker `.env`:**
+```bash
+APPLY_MODE=greenhouse
+APPLY_SUBMIT=false
+API_PUBLIC_URL=https://jobpilot-api.duckdns.org
+APPLY_WORKER_SECRET=<same as Oracle>
+MONGODB_URI=<Atlas URI>
+APPLY_DEFAULT_PHONE=+91...   # optional; many forms need phone
+```
+
+- `APPLY_SUBMIT=false` → fills form + uploads resume, status **opened**
+- `APPLY_SUBMIT=true` → clicks Submit, status **applied**
+
+After deploy: Accept a Greenhouse job → `pm2 logs jobpilot-apply-worker`.
+
 ```bash
 pm2 save
 pm2 startup

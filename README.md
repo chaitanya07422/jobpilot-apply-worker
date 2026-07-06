@@ -8,8 +8,8 @@ Runs on a **home Dell Linux (x86_64)** PC — not on the API host.
 |-------|--------|
 | Phase 1 — scaffold + CI/CD | Done |
 | Phase 2 — API enqueue on Accept | Done (shared Redis + `apply_jobs`) |
-| Phase 3 — Playwright open URL | Ready (`APPLY_MODE=open`) |
-| Phase 4 — Greenhouse form fill | Later |
+| Phase 3 — Playwright open URL | Done (`APPLY_MODE=open`) |
+| Phase 4 — Greenhouse form fill | Done (`APPLY_MODE=greenhouse`, `APPLY_SUBMIT=false` default) |
 
 **Repo:** https://github.com/chaitanya07422/jobpilot-apply-worker
 

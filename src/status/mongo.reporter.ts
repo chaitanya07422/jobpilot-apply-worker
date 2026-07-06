@@ -6,6 +6,7 @@ export type ApplyStatus =
   | 'running'
   | 'opened'
   | 'applied'
+  | 'needs_input'
   | 'failed'
   | 'cancelled';
 
