@@ -6,6 +6,11 @@ import {
   type ApplicantContext,
 } from '../applicant/applicant-client';
 import { config, type ApplyJobPayload } from '../config';
+import {
+  isTelegramSecurityCodeEnabled,
+  notifySecurityCodeRejected,
+  waitForSecurityCodeViaBackend,
+} from '../telegram/security-code';
 
 export type ReportedField = {
   key: string;
@@ -128,11 +133,11 @@ export async function runGreenhouseApply(
     if (config.applySubmit) {
       await submitGreenhouseForm(formRoot, page);
 
-      const securityResult = await handleSecurityCodeStep(
-        formRoot,
-        page,
-        applicant.answers,
-      );
+      const securityResult = await handleSecurityCodeStep(formRoot, page, payload.userId, {
+        company: payload.company,
+        role: payload.role,
+        applyUrl: payload.applyUrl,
+      }, applicant);
       if (securityResult) {
         return securityResult;
       }
@@ -1195,31 +1200,14 @@ async function describeSubmitFailure(
   return 'no confirmation message detected';
 }
 
-function getSecurityCodeFromAnswers(
-  answers: Record<string, string | string[]>,
-): string | null {
-  const raw = answers[GREENHOUSE_SECURITY_CODE_KEY];
-  if (typeof raw !== 'string') {
-    return null;
-  }
-  const normalized = raw.trim().replace(/\s/g, '').toUpperCase();
-  return normalized.length > 0 ? normalized : null;
-}
-
 async function detectSecurityCodeChallenge(
   formRoot: FormScope,
   page: Page,
-): Promise<ReportedField | null> {
+): Promise<boolean> {
   await page.waitForTimeout(1_000);
 
-  const boxes = formRoot.locator('[id^="security-input-"]');
-  if ((await boxes.count().catch(() => 0)) > 0) {
-    return {
-      key: GREENHOUSE_SECURITY_CODE_KEY,
-      label: 'Security code (check your email)',
-      type: 'text',
-      required: true,
-    };
+  if ((await formRoot.locator('[id^="security-input-"]').count().catch(() => 0)) > 0) {
+    return true;
   }
 
   const bodyText = await page
@@ -1231,98 +1219,280 @@ async function detectSecurityCodeChallenge(
     )
   ) {
     await page.waitForTimeout(1_500);
-    if ((await formRoot.locator('[id^="security-input-"]').count()) > 0) {
-      return {
-        key: GREENHOUSE_SECURITY_CODE_KEY,
-        label: 'Security code (check your email)',
-        type: 'text',
-        required: true,
-      };
-    }
-  }
-
-  return null;
-}
-
-/**
- * Greenhouse renders the code as 8 single-character inputs (#security-input-0 … 7).
- * Use native value setters — Playwright fill/type is unreliable on these boxes.
- */
-async function fillSecurityCode(page: Page, code: string): Promise<boolean> {
-  const normalized = code.replace(/\s/g, '').toUpperCase();
-  if (!normalized) {
-    return false;
-  }
-
-  const filledCount = await page.evaluate((value) => {
-    const chars = value.split('');
-    let count = 0;
-    for (let i = 0; i < chars.length; i += 1) {
-      const el = document.getElementById(
-        `security-input-${i}`,
-      ) as HTMLInputElement | null;
-      if (!el) {
-        break;
-      }
-      const setter = Object.getOwnPropertyDescriptor(
-        HTMLInputElement.prototype,
-        'value',
-      )?.set;
-      if (setter) {
-        setter.call(el, chars[i]);
-      } else {
-        el.value = chars[i];
-      }
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
-      count += 1;
-    }
-    return count;
-  }, normalized);
-
-  if (filledCount > 0) {
-    console.log(`[fill] ✓ security code (${filledCount} character(s))`);
-    return true;
+    return (await formRoot.locator('[id^="security-input-"]').count()) > 0;
   }
 
   return false;
 }
 
+/**
+ * Greenhouse OTP inputs only trigger server-side verification on real keyboard/paste
+ * events — native value setters update the DOM but verify with the wrong/empty payload.
+ */
+async function clearSecurityCodeInputs(formRoot: FormScope): Promise<void> {
+  const count = await formRoot
+    .locator('[id^="security-input-"]')
+    .count()
+    .catch(() => 0);
+  for (let i = 0; i < count; i += 1) {
+    const input = formRoot.locator(`#security-input-${i}`).first();
+    await input.click().catch(() => undefined);
+    await input.fill('').catch(() => undefined);
+  }
+}
+
+async function fillSecurityCode(
+  formRoot: FormScope,
+  page: Page,
+  code: string,
+): Promise<boolean> {
+  const normalized = code.replace(/[^A-Za-z0-9]/g, '');
+  if (normalized.length < 6) {
+    return false;
+  }
+
+  const inputCount = await formRoot
+    .locator('[id^="security-input-"]')
+    .count()
+    .catch(() => 0);
+  if (inputCount === 0) {
+    return false;
+  }
+
+  const chars = normalized.slice(0, inputCount).split('');
+  await clearSecurityCodeInputs(formRoot);
+
+  const firstInput = formRoot.locator('#security-input-0').first();
+  await firstInput.waitFor({ state: 'visible', timeout: 10_000 });
+  await firstInput.click();
+
+  // Many Greenhouse OTP widgets accept the full code from the first box.
+  await firstInput.pressSequentially(normalized, { delay: 120 });
+  await page.waitForTimeout(400);
+
+  let verified = await countVerifiedSecurityChars(formRoot, chars);
+  if (verified < chars.length) {
+    await clearSecurityCodeInputs(formRoot);
+    for (let i = 0; i < chars.length; i += 1) {
+      const input = formRoot.locator(`#security-input-${i}`).first();
+      await input.click();
+      await input.pressSequentially(chars[i], { delay: 80 });
+      await page.waitForTimeout(80);
+    }
+    verified = await countVerifiedSecurityChars(formRoot, chars);
+  }
+
+  if (verified > 0) {
+    console.log(
+      `[fill] ✓ security code (${verified}/${chars.length} character(s) verified in DOM)`,
+    );
+  }
+  return verified === chars.length;
+}
+
+async function countVerifiedSecurityChars(
+  formRoot: FormScope,
+  chars: string[],
+): Promise<number> {
+  let verified = 0;
+  for (let i = 0; i < chars.length; i += 1) {
+    const val = await formRoot
+      .locator(`#security-input-${i}`)
+      .inputValue()
+      .catch(() => '');
+    if (val === chars[i] || val.toUpperCase() === chars[i].toUpperCase()) {
+      verified += 1;
+    }
+  }
+  return verified;
+}
+
+async function waitForSecurityCodeOutcome(
+  formRoot: FormScope,
+  page: Page,
+  timeoutMs: number,
+): Promise<'success' | 'invalid' | 'pending'> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await hasSubmissionConfirmation(formRoot, page)) {
+      return 'success';
+    }
+
+    const invalid = await hasInvalidSecurityCodeError(formRoot, page);
+    if (invalid) {
+      return 'invalid';
+    }
+
+    const inputsVisible = await formRoot
+      .locator('[id^="security-input-"]')
+      .first()
+      .isVisible()
+      .catch(() => false);
+    if (!inputsVisible) {
+      return 'success';
+    }
+
+    await page.waitForTimeout(500);
+  }
+  return 'pending';
+}
+
+async function hasInvalidSecurityCodeError(
+  formRoot: FormScope,
+  page: Page,
+): Promise<string | null> {
+  for (const scope of [formRoot, page]) {
+    const bodyText = await scope
+      .locator('body')
+      .innerText()
+      .catch(() => '');
+    const match = bodyText.match(
+      /invalid.{0,20}code|code.{0,20}invalid|incorrect.{0,20}code|code.{0,20}expired|try again/i,
+    );
+    if (match) {
+      return match[0];
+    }
+  }
+  return null;
+}
+
 async function handleSecurityCodeStep(
   formRoot: FormScope,
   page: Page,
-  answers: Record<string, string | string[]>,
+  userId: string,
+  job: { company?: string; role?: string; applyUrl: string },
+  applicant: ApplicantContext,
 ): Promise<GreenhouseRunResult | null> {
   const challenge = await detectSecurityCodeChallenge(formRoot, page);
   if (!challenge) {
     return null;
   }
 
-  const code = getSecurityCodeFromAnswers(answers);
-  if (!code) {
+  if (!isTelegramSecurityCodeEnabled(applicant)) {
     console.log(
-      '[greenhouse] email security code required — enter the code from your inbox',
+      '[greenhouse] security code required — connect Telegram in Application profile',
     );
-    return { ok: false, status: 'needs_input', missingFields: [challenge] };
+    return {
+      ok: false,
+      status: 'failed',
+      error:
+        'Greenhouse security code required; connect Telegram in your Application profile',
+    };
   }
 
-  const filled = await fillSecurityCode(page, code);
-  if (!filled) {
-    console.log('[greenhouse] could not fill security code inputs');
-    return { ok: false, status: 'needs_input', missingFields: [challenge] };
-  }
+  console.log(
+    `[greenhouse] waiting for security code via Telegram (timeout ${config.telegramCodeTimeoutMs}ms)...`,
+  );
 
-  await submitGreenhouseForm(formRoot, page);
+  const maxAttempts = 2;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const code = await waitForSecurityCodeViaBackend({
+      userId,
+      company: job.company,
+      role: job.role,
+      applyUrl: job.applyUrl,
+      timeoutMs: config.telegramCodeTimeoutMs,
+      skipPrompt: attempt > 1,
+    });
 
-  const stillNeeded = await detectSecurityCodeChallenge(formRoot, page);
-  if (stillNeeded) {
+    if (!code) {
+      return {
+        ok: false,
+        status: 'failed',
+        error: 'Timed out waiting for Greenhouse security code via Telegram',
+      };
+    }
+
     console.log(
-      '[greenhouse] security code rejected or expired — enter the latest code from email',
+      `[greenhouse] received security code from Telegram (${code.length} chars, attempt ${attempt}/${maxAttempts})`,
     );
-    return { ok: false, status: 'needs_input', missingFields: [challenge] };
+
+    const filled = await fillSecurityCode(formRoot, page, code);
+    if (!filled) {
+      return {
+        ok: false,
+        status: 'failed',
+        error: 'Could not fill Greenhouse security code inputs',
+      };
+    }
+
+    const verifyResponsePromise = page
+      .waitForResponse(
+        (res) =>
+          res.request().method() === 'POST' &&
+          (/security|verify|validation|authenticate/i.test(res.url()) ||
+            /greenhouse\.io/i.test(res.url())),
+        { timeout: 20_000 },
+      )
+      .catch(() => null);
+
+    await page.waitForTimeout(500);
+    await verifyResponsePromise;
+
+    const outcome = await waitForSecurityCodeOutcome(formRoot, page, 20_000);
+
+    if (outcome === 'success') {
+      return null;
+    }
+
+    if (outcome === 'invalid') {
+      const invalidError = await hasInvalidSecurityCodeError(formRoot, page);
+      console.log(
+        `[greenhouse] security code rejected by Greenhouse${invalidError ? `: ${invalidError}` : ''}`,
+      );
+      await notifySecurityCodeRejected({
+        userId,
+        company: job.company,
+        role: job.role,
+      });
+      if (attempt < maxAttempts) {
+        console.log(
+          '[greenhouse] waiting for another security code via Telegram...',
+        );
+        await clearSecurityCodeInputs(formRoot);
+        continue;
+      }
+      return {
+        ok: false,
+        status: 'failed',
+        error:
+          'Greenhouse rejected the security code — check email for the latest code and retry apply',
+      };
+    }
+
+    // Still on code screen — try Enter on the last box (no full-form resubmit).
+    const lastInput = formRoot
+      .locator(`#security-input-${Math.min(code.length, 8) - 1}`)
+      .first();
+    await lastInput.press('Enter').catch(() => undefined);
+    await page.waitForTimeout(2_000);
+
+    if (await hasSubmissionConfirmation(formRoot, page)) {
+      return null;
+    }
+
+    const stillNeeded = await detectSecurityCodeChallenge(formRoot, page);
+    if (!stillNeeded) {
+      return null;
+    }
+
+    if (attempt < maxAttempts) {
+      await notifySecurityCodeRejected({
+        userId,
+        company: job.company,
+        role: job.role,
+      });
+      await clearSecurityCodeInputs(formRoot);
+      continue;
+    }
   }
 
-  return null;
+  return {
+    ok: false,
+    status: 'failed',
+    error:
+      'Greenhouse rejected the security code — check email for the latest code and retry apply',
+  };
 }
 
 async function dumpPostSubmitState(

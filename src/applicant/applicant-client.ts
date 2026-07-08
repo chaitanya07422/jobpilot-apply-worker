@@ -14,6 +14,8 @@ export type ApplicantContext = {
   resumeMimeType: string;
   answers: Record<string, string | string[]>;
   phoneCountry?: string;
+  telegramChatId?: string;
+  telegramConnected?: boolean;
 };
 
 function workerHeaders(): Record<string, string> {

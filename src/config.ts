@@ -42,6 +42,7 @@ export const config = {
   ).replace(/\/$/, ''),
   applyWorkerSecret: process.env.APPLY_WORKER_SECRET?.trim() || '',
   defaultPhone: process.env.APPLY_DEFAULT_PHONE?.trim() || '',
+  telegramCodeTimeoutMs: Number(process.env.TELEGRAM_CODE_TIMEOUT_MS ?? 600_000),
 };
 
 export type ApplyJobPayload = {
