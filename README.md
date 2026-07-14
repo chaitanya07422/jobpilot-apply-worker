@@ -13,6 +13,110 @@ Runs on a **home Dell Linux (x86_64)** PC — not on the API host.
 
 **Repo:** https://github.com/chaitanya07422/jobpilot-apply-worker
 
+Related: [jobpilot-backend](https://github.com/chaitanya07422/jobpilot-backend) · [Tailscale Redis](docs/TAILSCALE-REDIS.md) · [Dell setup](docs/DELL-SETUP.md)
+
+---
+
+## Architecture
+
+This service is the **BullMQ consumer** for JobPilot auto-apply. The Nest API (**jobpilot-backend**) enqueues jobs; this worker runs on the Dell, drives Playwright against ATS pages, and writes status back to shared MongoDB. Telegram OTP handling stays on the API — the worker only calls internal HTTP endpoints.
+
+### System diagram
+
+```text
+  jobpilot-ai / jobpilot-admin
+              │
+              ▼
+┌─────────────────────────────┐         Tailscale
+│  jobpilot-backend (Oracle)  │──────────────────────┐
+│  POST /jobs/:id/accept      │                      │
+│  → BullMQ enqueue "apply"   │                      ▼
+│  Internal APIs:             │              ┌───────────────┐
+│   context / resume / OTP    │◄─────────────│ Redis :6379   │
+│   missing-fields            │  consume     │ (on Dell)     │
+└──────────────┬──────────────┘              └───────▲───────┘
+               │ HTTPS  X-Apply-Worker-Key           │
+               │                                     │
+               │         ┌───────────────────────────┘
+               │         │
+               ▼         ▼
+┌──────────────────────────────────────────────────────┐
+│  jobpilot-apply-worker (Dell Linux + PM2)            │
+│                                                      │
+│  index.ts                                            │
+│    ├─ health server  :3100 /health                   │
+│    └─ BullMQ Worker (queue: apply)                   │
+│           │                                          │
+│           ├─ APPLY_MODE=noop      → ack only         │
+│           ├─ APPLY_MODE=open      → open-url runner  │
+│           └─ APPLY_MODE=greenhouse                   │
+│                 → greenhouse.runner (Playwright)     │
+│                      ├─ fetch context + resume PDF   │
+│                      ├─ fill Greenhouse embed form   │
+│                      ├─ optional Submit              │
+│                      └─ Telegram security-code wait  │
+│                           (via backend internal API) │
+│                                                      │
+│  mongo.reporter → MongoDB Atlas apply_jobs           │
+└──────────────────────────────────────────────────────┘
+```
+
+```mermaid
+flowchart TB
+  UI["jobpilot-ai / admin"] --> API["jobpilot-backend<br/>Oracle VM"]
+  API -->|"enqueue BullMQ apply"| Redis[("Redis on Dell")]
+  Redis --> W["apply.worker<br/>BullMQ consumer"]
+  W --> Modes{"APPLY_MODE"}
+  Modes -->|noop| Noop["Ack → opened"]
+  Modes -->|open| Open["open-url.runner<br/>Playwright navigate"]
+  Modes -->|greenhouse| GH["greenhouse.runner<br/>fill / submit / OTP"]
+  GH -->|"GET context, resume<br/>POST missing-fields, telegram OTP"| API
+  W -->|"update status"| Mongo[("MongoDB Atlas<br/>apply_jobs")]
+  W --> Health["GET :3100/health"]
+```
+
+### Apply job lifecycle
+
+```text
+queued (API writes apply_jobs + enqueues)
+   │
+   ▼
+running (worker picks job)
+   │
+   ├──▶ opened      — navigate / fill-only (APPLY_SUBMIT=false)
+   ├──▶ applied     — Greenhouse submit succeeded
+   ├──▶ needs_input — required fields missing (reported to API)
+   └──▶ failed      — unexpected error (no BullMQ retry throw)
+```
+
+### Component map
+
+| Path | Role |
+|------|------|
+| `src/index.ts` | Boot: Mongo → health server → BullMQ worker |
+| `src/queue/apply.worker.ts` | Consume queue `apply`, route by `APPLY_MODE` |
+| `src/runners/greenhouse.runner.ts` | Greenhouse fill, resume upload, submit, OTP |
+| `src/runners/open-url.runner.ts` | Navigate-only fallback |
+| `src/applicant/applicant-client.ts` | Backend HTTP (`X-Apply-Worker-Key`) |
+| `src/telegram/security-code.ts` | Wait / retry OTP via backend |
+| `src/status/mongo.reporter.ts` | Direct `apply_jobs` status writes |
+| `src/health/server.ts` | `GET /health` |
+
+### Boundary with the API
+
+| Concern | Owner |
+|---------|--------|
+| Enqueue on Accept / retry | **Backend** |
+| BullMQ consume + Playwright | **This worker** |
+| Resume PDF + apply context | Backend internal API → worker |
+| Telegram bot token + OTP relay | **Backend** (worker long-polls wait endpoint) |
+| `apply_jobs` status | Worker writes Mongo directly (same Atlas DB) |
+| ATS coverage today | **Greenhouse only**; other URLs use open-url |
+
+### Topology note (Redis)
+
+API and worker must share one Redis. Typical prod layout: Redis runs on the Dell; backend reaches it over Tailscale (`REDIS_HOST=<Dell Tailscale IP>`); worker uses `REDIS_HOST=127.0.0.1`. See [docs/TAILSCALE-REDIS.md](docs/TAILSCALE-REDIS.md).
+
 ---
 
 ## One-time setup on the Dell (`chaitu@192.168.1.15`)
